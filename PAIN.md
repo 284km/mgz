@@ -46,7 +46,8 @@ functions dropped a curried-inner-rec-fn microbenchmark from 769 MB to 1.46 MB
 
 ## Still open (not language bugs)
 
-- Compression ratio: `deflate.mere` uses fixed Huffman, not dynamic, so it is
-  ~2x larger than `gzip -9`. A dynamic-Huffman output stage would close that.
 - Match speed: the LZ77 matcher is a naive window scan (fine natively, slow
   interpreted). A real implementation would use a hash chain.
+- Window size: LZ77 back-references never cross a single DEFLATE block, and the
+  compressor emits one block for the whole input, so very large files are not
+  chunked. `gzip` streams 32 KB windows across many blocks.

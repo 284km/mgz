@@ -26,9 +26,13 @@ verifies the trailer's CRC-32 and length against the decompressed output.
 
 **`deflate.mere`** — a DEFLATE compressor: a bit writer that packs
 variable-length codes LSB-first across byte boundaries, a greedy longest-match
-LZ77 that emits length/distance back-references, and fixed-Huffman literal and
-length codes. Fixed Huffman plus greedy matching leaves roughly 2x on the table
-versus `gzip -9`'s dynamic Huffman — a completeness gap, not a bug.
+LZ77 that emits length/distance back-references, and a per-block dynamic
+Huffman stage. Symbol frequencies drive a node-pool Huffman tree; the codes are
+made canonical (RFC 1951 §3.2.2) and the code-length alphabet is itself
+run-length coded (symbols 16/17/18) into the block header. If a code would
+exceed the format's 15-bit limit the block falls back to a stored (uncompressed)
+block. The result is competitive with `gzip -9` — on a real text file it lands
+within a few percent, and on some repetitive inputs it edges ahead.
 
 Both are byte-for-byte interoperable with the system tools and with each other,
 on the interpreter and the C backend alike.
