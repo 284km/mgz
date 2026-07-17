@@ -1,0 +1,8 @@
+target/
+*.wasm
+*.c
+*.mgz
+*.out
+deflate
+inflate
+a.out
