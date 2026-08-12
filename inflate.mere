@@ -1,8 +1,13 @@
-// mgz G2+G3: inflate (RFC 1951) + gzip container (RFC 1952) in pure Mere.
+// inflate (RFC 1951) and the gzip container (RFC 1952), in pure Mere.
 // One canonical Huffman decoder serves stored / fixed / dynamic blocks
-// (fixed tables are just a particular set of code lengths). Verifies the
-// CRC-32 and ISIZE trailer against the decompressed output.
-// Usage: mgunzip <file.gz>  ->  writes <file.gz>.out
+// (fixed tables are just a particular set of code lengths).
+//
+// A module: definitions only, no program. `mgunzip.mere` is the CLI.
+// Exports used by other packages:
+//   inflate     data start   -> vec   raw DEFLATE from a bit offset
+//   gunzip      data         -> vec   gzip container, header skipped
+//   gunzip_ok   data out     -> bool  verify the CRC-32 / ISIZE trailer
+//   crc32_vec   bytes        -> int
 
 let mask32 = 0xFFFFFFFF;
 
@@ -215,41 +220,36 @@ let inflate = fn data -> fn (start: int) ->
   block ();
 
 // ---- gzip container -------------------------------------------------------
-let demo = fn () ->
-  let args_v = args () in
-  match args_v with
-  | Nil -> print "usage: mgunzip <file.gz>"
-  | Cons (path, _) ->
-    let data = read_file_bytes path in
-    let m0 = (vec_get data 0 : int) in
-    let m1 = (vec_get data 1 : int) in
-    let cm = (vec_get data 2 : int) in
-    if m0 != 0x1F || m1 != 0x8B || cm != 8 then print "not a gzip file"
-    else
-      let flg = (vec_get data 3 : int) in
-      // skip MTIME(4) XFL OS -> offset 10; then optional fields
-      let off10 = 10 in
-      let off_extra =
-        if bit_and flg 4 != 0 then
-          let xlen = (vec_get data off10 : int) + bit_shl (vec_get data (off10 + 1)) 8 in
-          off10 + 2 + xlen
-        else off10 in
-      let rec skip_z = fn (o: int) ->
-        if (vec_get data o : int) == 0 then o + 1 else skip_z (o + 1) in
-      let off_name = if bit_and flg 8 != 0 then skip_z off_extra else off_extra in
-      let off_comm = if bit_and flg 16 != 0 then skip_z off_name else off_name in
-      let start = if bit_and flg 2 != 0 then off_comm + 2 else off_comm in
-      let out = inflate data start in
-      // trailer: last 8 bytes = CRC32 LE, ISIZE LE
-      let n = vec_len data in
-      let rd_u32 = fn (o: int) ->
-        (vec_get data o : int) + bit_shl (vec_get data (o + 1)) 8
-        + bit_shl (vec_get data (o + 2)) 16 + bit_shl (vec_get data (o + 3)) 24 in
-      let want_crc = rd_u32 (n - 8) in
-      let want_size = rd_u32 (n - 4) in
-      let got_crc = crc32_vec out in
-      let ok = got_crc == want_crc && bit_and (vec_len out) mask32 == want_size in
-      let _ = write_file_bytes (path ++ ".out") out in
-      print (str_of_int (vec_len data) ++ " -> " ++ str_of_int (vec_len out)
-             ++ " bytes, crc " ++ (if ok then "OK" else "MISMATCH")) in
-demo ()
+// Offset of the DEFLATE stream inside a gzip member: past the 10-byte header
+// and whatever optional EXTRA / NAME / COMMENT / HCRC fields FLG announces.
+let gzip_body_start = fn data ->
+  let flg = (vec_get data 3 : int) in
+  let off10 = 10 in
+  let off_extra =
+    if bit_and flg 4 != 0 then
+      let xlen = (vec_get data off10 : int) + bit_shl (vec_get data (off10 + 1)) 8 in
+      off10 + 2 + xlen
+    else off10 in
+  let rec skip_z = fn (o: int) ->
+    if (vec_get data o : int) == 0 then o + 1 else skip_z (o + 1) in
+  let off_name = if bit_and flg 8 != 0 then skip_z off_extra else off_extra in
+  let off_comm = if bit_and flg 16 != 0 then skip_z off_name else off_name in
+  if bit_and flg 2 != 0 then off_comm + 2 else off_comm;
+
+let is_gzip = fn data ->
+  vec_len data >= 18
+  && (vec_get data 0 : int) == 0x1F
+  && (vec_get data 1 : int) == 0x8B
+  && (vec_get data 2 : int) == 8;
+
+let gunzip = fn data -> inflate data (gzip_body_start data);
+
+// trailer: the last 8 bytes are CRC-32 then ISIZE, both little-endian.
+let gzip_trailer_u32 = fn data -> fn (o: int) ->
+  (vec_get data o : int) + bit_shl (vec_get data (o + 1)) 8
+  + bit_shl (vec_get data (o + 2)) 16 + bit_shl (vec_get data (o + 3)) 24;
+
+let gunzip_ok = fn data -> fn out ->
+  let n = vec_len data in
+  crc32_vec out == gzip_trailer_u32 data (n - 8)
+  && bit_and (vec_len out) mask32 == gzip_trailer_u32 data (n - 4);

@@ -1,0 +1,16 @@
+// mgunzip <file.gz> -> writes <file.gz>.out
+// The CLI over inflate.mere: read, check the magic, inflate, verify, write.
+import "./inflate.mere";
+
+let main = fn () ->
+  match args () with
+  | Nil -> print "usage: mgunzip <file.gz>"
+  | Cons (path, _) ->
+    let data = read_file_bytes path in
+    if is_gzip data then
+      let out = gunzip data in
+      let _ = write_file_bytes (path ++ ".out") out in
+      print (str_of_int (vec_len data) ++ " -> " ++ str_of_int (vec_len out)
+             ++ " bytes, crc " ++ (if gunzip_ok data out then "OK" else "MISMATCH"))
+    else print "not a gzip file";
+main ()

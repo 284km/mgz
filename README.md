@@ -7,14 +7,47 @@ what the system `gzip` writes.
 
 ```sh
 # compress: produces <file>.mgz (valid gzip)
-mere -c deflate.mere > d.c && clang -O2 d.c -o deflate && ./deflate README.md
+mere -c mgzip.mere > z.c && clang -O2 z.c -o mgzip && ./mgzip README.md
 gunzip -c README.md.mgz | diff - README.md   # round-trips
 
 # decompress a real .gz
 gzip -c README.md > r.gz
-mere -c inflate.mere > i.c && clang -O2 i.c -o inflate && ./inflate r.gz
-diff README.md.mgz.out README.md 2>/dev/null || diff r.gz.out README.md
+mere -c mgunzip.mere > u.c && clang -O2 u.c -o mgunzip && ./mgunzip r.gz
+diff r.gz.out README.md
 ```
+
+## Using it as a package
+
+`inflate.mere` and `deflate.mere` are **modules** — definitions only, no
+program — so another project can vendor mgz and import them. `mgzip.mere` and
+`mgunzip.mere` are the CLIs, and they use the same import.
+
+```sh
+cd my_app
+git clone https://github.com/284km/mgz .mere_modules/mgz
+```
+
+```mere
+import "mgz/inflate.mere";
+import "mgz/deflate.mere";
+
+let squeezed = deflate_body data;      // raw DEFLATE (RFC 1951)
+let member   = deflate_gzip data;      // ...in a gzip member (RFC 1952)
+let back     = inflate member (gzip_body_start member);
+let sum      = crc32_vec data;
+```
+
+| export | from | meaning |
+|---|---|---|
+| `inflate data start` | inflate.mere | raw DEFLATE, decoding from byte offset `start` |
+| `is_gzip data` | inflate.mere | does this look like a gzip member |
+| `gzip_body_start data` | inflate.mere | offset of the DEFLATE stream past the header |
+| `gunzip data` | inflate.mere | the two above, composed |
+| `gunzip_ok data out` | inflate.mere | verify the CRC-32 / ISIZE trailer |
+| `crc32_vec bytes` | either | CRC-32 of a byte vector |
+| `deflate_body data` | deflate.mere | raw DEFLATE, dynamic Huffman with a stored fallback |
+| `deflate_stored data` | deflate.mere | raw DEFLATE, stored blocks only (always valid) |
+| `deflate_gzip data` | deflate.mere | `deflate_body` in a gzip member |
 
 ## What's implemented
 

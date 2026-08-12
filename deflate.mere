@@ -9,7 +9,12 @@
 // block falls back to a stored (uncompressed) block, which is always valid.
 // Output is valid gzip: system gunzip AND inflate.mere both round-trip it
 // byte-identically with a verified CRC-32, and it is competitive with gzip -9.
-// Usage: mere deflate.mere <file>  ->  writes <file>.mgz
+//
+// A module: definitions only, no program. `mgzip.mere` is the CLI.
+// Exports used by other packages:
+//   deflate_body data -> vec   raw DEFLATE (dynamic Huffman, stored fallback)
+//   deflate_gzip data -> vec   the same wrapped in a gzip member
+//   crc32_vec    data -> int
 
 let mask32 = 0xFFFFFFFF;
 let vec_of = fn xs ->
@@ -454,14 +459,3 @@ let deflate_gzip = fn data ->
   let _ = push_u32 (crc32_vec data) in
   let _ = push_u32 (bit_and (vec_len data) mask32) in
   out;
-
-let demo = fn () ->
-  let args_v = args () in
-  match args_v with
-  | Nil -> print "usage: deflate <file>"
-  | Cons (path, _) ->
-    let data = read_file_bytes path in
-    let gz = deflate_gzip data in
-    let _ = write_file_bytes (path ++ ".mgz") gz in
-    print (str_of_int (vec_len data) ++ " -> " ++ str_of_int (vec_len gz) ++ " bytes (dynamic) " ++ path ++ ".mgz") in
-demo ()
