@@ -51,3 +51,37 @@ functions dropped a curried-inner-rec-fn microbenchmark from 769 MB to 1.46 MB
 - Window size: LZ77 back-references never cross a single DEFLATE block, and the
   compressor emits one block for the whole input, so very large files are not
   chunked. `gzip` streams 32 KB windows across many blocks.
+
+## The lambda lifter drops a capture, chosen by name
+
+Splitting the two algorithms into importable modules worked; importing
+them into a *large* program did not. mere-ruby's `main.mere` (~21k
+lines) built C that would not compile:
+
+    error: use of undeclared identifier 'mu_p'
+
+The lifted C function for `find_match`'s inner `mlen` still referenced
+`mu_p` in its body but no longer took it as a parameter. Compiled
+standalone — and imported into a *small* program, and with both modules
+imported at once — the same source lifted it correctly, with `mu_p`
+present in the parameter list.
+
+The reduction is as small as it gets: two copies of `deflate.mere`
+differing **only** in one identifier's name.
+
+| the position is called | result |
+|---|---|
+| `p`   | 4 clang errors, `mu_p` undeclared |
+| `pos` | clean build |
+
+Nothing else changes — same structure, same nesting, same captures. So
+the lifter's free-variable analysis is name-sensitive in a way that
+depends on the *importing* program. (It is not simply "a name the host
+also uses": `main.mere` binds `pos` in thirteen places and that one is
+fine.)
+
+The failure is at least loud — it is a C compile error, not a wrong
+answer. But it is invisible from the Mere side: nothing in this file is
+wrong, and the same file is correct in another program. mgz now calls
+the position `pos`, with a comment saying why, so importing it does not
+depend on that analysis.
