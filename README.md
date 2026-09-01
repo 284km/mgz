@@ -78,3 +78,20 @@ operators, hex literals, and a binary-safe file reader/writer (`read_file_bytes`
 / `write_file_bytes`, since a NUL-terminated string would truncate compressed
 data at its first zero byte). Composing them into a real format flushed out
 three code-generation bugs and one large performance bug — see [PAIN.md](PAIN.md).
+
+## Checking it
+
+```sh
+MERE=/path/to/mere sh test/crc32_check.sh
+```
+
+CRC-32 against zlib's answer for a known input, on the interpreter, the C
+backend, and compiling for RV32I — plus one arm that checks `shr1` is a
+*logical* shift rather than the arithmetic one `bit_shr` gives.
+
+That last arm is the reason the file exists. A CRC accumulator starts as all
+ones, so on a backend whose int is exactly 32 bits wide it is negative from the
+first step and an arithmetic shift never lets the top bit go. On a wider int the
+accumulator is positive and the same code is correct, so the algorithm cannot
+show the difference anywhere this gate can run — handed a negative directly, the
+shift can.
