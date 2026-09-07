@@ -371,6 +371,26 @@ let deflate_dynamic = fn data ->
     let _ = vec_set clfreq sym ((vec_get clfreq sym : int) + 1) in ccount (i + 3) in
   let _ = ccount 0 in
   let cllen = build_lengths clfreq 19 7 in
+  // THE CODE-LENGTH TREE HAS ITS OWN LIMIT AND IT WAS NOT CHECKED. RFC 1951
+  // gives the code-length alphabet at most 7 bits, where the literal and
+  // distance trees get 15. `build_lengths` deliberately does not limit anything
+  // -- its comment says the caller checks -- and `deflate_body` does check the
+  // other two and never checked this one, so a frequency distribution that
+  // needs an 8-bit code-length code walked `canon_codes`'s bl_count array (8
+  // entries, indices 0..7) at index 8 and aborted.
+  //
+  // Found by a renderer: a 32x32 image of random pixels is enough. It is data
+  // dependent -- 16, 64 and 128 square all encode fine -- which is why nothing
+  // met it before.
+  //
+  // An EMPTY RESULT means "this block cannot be written dynamically", and
+  // `deflate_body` falls back to a stored block, which is what it already does
+  // for the other two trees. Returning the empty vec rather than calling
+  // `deflate_stored` here because that function is defined below this one and
+  // there is no forward reference; an empty output is unambiguous, since a real
+  // deflate block is never zero bytes.
+  if vmax cllen 19 > 7 then vec_new ()
+  else
   let clcode = canon_codes cllen 19 7 in
   // HCLEN: number of cl code lengths present, in cl_order, min 4
   let rec last_cl = fn (i: int) -> if i < 4 then 4 else
@@ -466,7 +486,12 @@ let deflate_body = fn data ->
   let llen = build_lengths lfreq 286 15 in
   let dlen = build_lengths dfreq 30 15 in
   if vmax llen 286 > 15 || vmax dlen 30 > 15 then deflate_stored data
-  else deflate_dynamic data;
+  else
+    // The dynamic writer returns nothing when ITS code-length tree needs more
+    // than the 7 bits RFC 1951 allows -- a case this line used to not know
+    // about, so the encoder aborted instead of falling back.
+    let dynb = deflate_dynamic data in
+    if vec_len dynb == 0 then deflate_stored data else dynb;
 
 let deflate_gzip = fn data ->
   let out = vec_new () in
