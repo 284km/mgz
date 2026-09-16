@@ -24,11 +24,14 @@ rc=0
 WANT=939184570
 
 cat > "$TMP/p.mere" <<MERE
-import "$ROOT/inflate.mere";
-let b = vec_new ();
-let rec fill = fn (i: int) -> if i > 8 then () else let _ = vec_push b (48 + i) in fill (i + 1);
-let _ = fill 0;
-let _ = print_int (crc32_vec b);
+import "$ROOT/crc32.mere";
+// The arithmetic, folded here rather than through inflate.mere's iteration.
+// That module needs a byte buffer, which has no RV32I lowering -- and RV32I is
+// the whole reason this file exists, so the part that broke there lives where
+// it can still be asked there.
+let rec fold = fn (i: int) -> fn (crc: int) ->
+  if i > 8 then crc else fold (i + 1) (crc_byte crc (48 + i));
+let _ = print_int (bit_xor (fold 0 mask32) mask32);
 MERE
 
 got=$("$MERE" "$TMP/p.mere" 2>&1 | head -1)
@@ -44,7 +47,9 @@ if command -v cc >/dev/null 2>&1; then
 fi
 
 # RV32I: 32-bit and signed. Compiling is what can be checked without an
-# emulator; running it there gave $WANT as well.
+# emulator; running it there gave $WANT as well. It is crc32.mere that is asked
+# here: inflate.mere moved to a byte buffer, which that backend has no
+# lowering for, and the arithmetic was split out so this arm would survive it.
 if "$MERE" -rv "$TMP/p.mere" > "$TMP/p.bin" 2>"$TMP/rve"; then :; else
   echo "FAIL crc32: does not compile for RV32I (32-bit signed int)"
   head -4 "$TMP/rve"

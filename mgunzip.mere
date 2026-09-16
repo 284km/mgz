@@ -6,11 +6,13 @@ let main = fn () ->
   match args () with
   | Nil -> print "usage: mgunzip <file.gz>"
   | Cons (path, _) ->
-    let data = read_file_bytes path in
+    // read_bytes, not read_file_bytes: the latter costs eight bytes per byte,
+    // and a gzip member is the one thing here whose size is not ours to choose.
+    let data = bytebuf_of_bytes (read_bytes path) in
     if is_gzip data then
       let out = gunzip data in
-      let _ = write_file_bytes (path ++ ".out") out in
-      print (str_of_int (vec_len data) ++ " -> " ++ str_of_int (vec_len out)
+      let _ = write_bytes (path ++ ".out") (bytes_of_bytebuf out) in
+      print (str_of_int (bytebuf_len data) ++ " -> " ++ str_of_int (bytebuf_len out)
              ++ " bytes, crc " ++ (if gunzip_ok data out then "OK" else "MISMATCH"))
     else print "not a gzip file";
 main ()

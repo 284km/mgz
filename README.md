@@ -95,3 +95,50 @@ first step and an arithmetic shift never lets the top bit go. On a wider int the
 accumulator is positive and the same code is correct, so the algorithm cannot
 show the difference anywhere this gate can run — handed a negative directly, the
 shift can.
+
+
+## One byte per byte
+
+`inflate` holds bytes in a `ByteBuf`, not a `Vec` of ints. A vector of ints
+costs **eight bytes per byte** on a 64-bit backend, so a 4 MB gzip member was
+32 MB of input and 71 MB of output before anything was written anywhere. The
+stdlib says as much about `read_file_bytes` — *"Costs eight bytes per byte;
+prefer `read_bytes`"* — and nothing here had read it.
+
+Measured by `test/gunzip_check.sh`, decompressing 2.2 MB:
+
+| | peak RSS | |
+|---|---|---|
+| `Vec` of ints | 26.0 MB | 11× the output |
+| `ByteBuf` | 9.1 MB | 4× the output |
+
+The gate asserts the ratio, so going back to one is caught rather than noticed
+later by whoever runs out of memory.
+
+**What it costs:** `inflate.mere` no longer compiles for RV32I, because a byte
+buffer has no lowering there. That backend is the reason `crc32_check.sh`
+exists — it found a real bug, where an int is exactly 32 bits wide and a CRC
+accumulator is negative from its first step — so the arithmetic moved into
+`crc32.mere`, which uses no byte buffer and is still asked that question there.
+It was written out twice before, identically, in `inflate.mere` and
+`deflate.mere`; a program importing both got two definitions with the later one
+quietly winning.
+
+## The check that was missing
+
+The README claimed from the beginning that the output matched the system gzip
+byte for byte, and nothing here checked it. `crc32_check.sh` checks the
+checksum and `deflate_roundtrip_check.sh` checks that our own compressor's
+output is accepted — **neither would notice a decompressor that produced the
+wrong bytes with the right CRC-32**, because the CRC is computed over the same
+wrong bytes and agrees with itself.
+
+`test/gunzip_check.sh` compares against `gzip` on four shapes of input — text,
+long matches, incompressible, and one big enough for the memory number to mean
+something — and on a stream from a third compressor, so it is not just our
+writer and our reader agreeing. Its poison drops one byte in the middle: the
+comparison catches it, and the daemon's own checksum happens to as well.
+
+```sh
+MERE=/path/to/mere sh test/gunzip_check.sh
+```

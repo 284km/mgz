@@ -20,20 +20,17 @@
 // this way it is the all-ones mask on every width: 2^32 - 1 where an int is
 // wider than 32 bits, and -1 where it is exactly 32, since the shift produces 0
 // there. Both are the right mask for their width.
-let mask32 = bit_shl 1 32 - 1;
+
 // The sign bit, cleared, which turns the arithmetic right shift into the
 // logical one CRC-32 needs. `bit_shr` propagates the sign on every backend
 // (`bit_shr (0 - 1) 1` is -1), and a CRC accumulator STARTS as all ones -- so
 // where an int is 32 bits wide it is negative from the first step and the top
 // bit never leaves. Masking after the shift removes it. Above 32 bits the
 // accumulator is positive and the mask is a no-op.
-let mask31 = bit_shl 1 31 - 1;
-let shr1 = fn (c: int) -> bit_and (bit_shr c 1) mask31;
 // The reversed CRC-32 polynomial. Its top bit is set, so as one literal it does
 // not fit a signed 32-bit int either; assembled from halves it is the same 32
 // bits on every width (negative where the int is exactly 32 wide, which is
 // what those bits mean there).
-let crc_poly = bit_or (bit_shl 0xEDB8 16) 0x8320;
 let vec_of = fn xs ->
   let v = vec_new () in
   let rec go = fn l -> match l with Nil -> v | Cons (h, t) -> let _ = vec_push v (h : int) in go t in
@@ -43,14 +40,10 @@ let g_len_extra = vec_of (Cons (0, Cons (0, Cons (0, Cons (0, Cons (0, Cons (0, 
 let g_dist_base = vec_of (Cons (1, Cons (2, Cons (3, Cons (4, Cons (5, Cons (7, Cons (9, Cons (13, Cons (17, Cons (25, Cons (33, Cons (49, Cons (65, Cons (97, Cons (129, Cons (193, Cons (257, Cons (385, Cons (513, Cons (769, Cons (1025, Cons (1537, Cons (2049, Cons (3073, Cons (4097, Cons (6145, Cons (8193, Cons (12289, Cons (16385, Cons (24577, Nil)))))))))))))))))))))))))))))));
 let g_dist_extra = vec_of (Cons (0, Cons (0, Cons (0, Cons (0, Cons (1, Cons (1, Cons (2, Cons (2, Cons (3, Cons (3, Cons (4, Cons (4, Cons (5, Cons (5, Cons (6, Cons (6, Cons (7, Cons (7, Cons (8, Cons (8, Cons (9, Cons (9, Cons (10, Cons (10, Cons (11, Cons (11, Cons (12, Cons (12, Cons (13, Cons (13, Nil)))))))))))))))))))))))))))))));
 
-let crc_byte = fn (crc: int) -> fn (b: int) ->
-  let x = bit_xor crc b in
-  let rec go = fn i -> fn (c: int) ->
-    if i == 8 then c
-    else go (i + 1) (if bit_and c 1 == 1
-                     then bit_xor (shr1 c) crc_poly
-                     else shr1 c) in
-  go 0 x;
+import "./crc32.mere";
+
+// The iteration over a byte VECTOR, which is what this compressor's input is.
+// The arithmetic is in crc32.mere, written out here twice until it was not.
 let crc32_vec = fn bytes ->
   let n = vec_len bytes in
   let rec go = fn i -> fn (crc: int) ->

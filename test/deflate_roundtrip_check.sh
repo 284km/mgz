@@ -28,6 +28,20 @@ cat > "$TMP/rt.mere" <<'MERE'
 import "inflate.mere";
 import "deflate.mere";
 
+// deflate writes a byte VECTOR and inflate reads a byte BUFFER. The bridge is
+// here rather than in either of them: the compressor's output is small enough
+// to hold either way, and the decompressor's is not.
+let to_buf = fn (v) ->
+  let b = bytebuf_new 0 in
+  let rec go = fn (i: int) ->
+    if i == vec_len v then () else let _ = bytebuf_push b (vec_get v i : int) in go (i + 1) in
+  let _ = go 0 in b;
+let of_buf = fn (b) ->
+  let v = vec_new () in
+  let rec go = fn (i: int) ->
+    if i == bytebuf_len b then () else let _ = vec_push v (bytebuf_get b i) in go (i + 1) in
+  let _ = go 0 in v;
+
 // Random bytes: incompressible, so the Huffman trees are as wide as they get and the
 // code-length alphabet is pushed hardest. A run of zeros would never reach the case.
 let make = fn (n: int) -> fn (seed: int) ->
@@ -58,7 +72,7 @@ let one_vec = fn (src) ->
   // fallback -- which is the second half of the bug this file pins.
   let _ = if vec_len enc == 0 && n > 0 then
             let _ = vec_push bad n in print ("EMPTY n=" ++ str_of_int n) else () in
-  let back = inflate enc 0 in
+  let back = of_buf (inflate (to_buf enc) 0) in
   if same src back then ()
   else let _ = vec_push bad n in
        print ("MISMATCH n=" ++ str_of_int n ++ " got " ++ str_of_int (vec_len back));
@@ -87,7 +101,7 @@ print (if vec_len bad == 0 then "deflate_roundtrip: ok" else "deflate_roundtrip:
 MERE
 
 rc=0
-cp "$ROOT/inflate.mere" "$ROOT/deflate.mere" "$TMP/"
+cp "$ROOT/inflate.mere" "$ROOT/deflate.mere" "$ROOT/crc32.mere" "$TMP/"
 sed -i.bak "s|TRIGGER_PATH|$ROOT/test/data/cl_overflow.hex|" "$TMP/rt.mere"
 out=$("$MERE" "$TMP/rt.mere" 2>&1) || { echo "roundtrip: interp did not run"; echo "$out" | head -3; rc=1; }
 echo "  interp: $(echo "$out" | grep deflate_roundtrip | tail -1)"
