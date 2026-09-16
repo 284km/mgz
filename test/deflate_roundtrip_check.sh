@@ -28,9 +28,10 @@ cat > "$TMP/rt.mere" <<'MERE'
 import "inflate.mere";
 import "deflate.mere";
 
-// deflate writes a byte VECTOR and inflate reads a byte BUFFER. The bridge is
-// here rather than in either of them: the compressor's output is small enough
-// to hold either way, and the decompressor's is not.
+// deflate writes a byte VECTOR and inflate reads a byte BUFFER and writes a
+// FILE. The bridges are here rather than in either of them: the compressor's
+// output is small enough to hold either way, and the decompressor's is not --
+// which is the whole reason it writes as it goes.
 let to_buf = fn (v) ->
   let b = bytebuf_new 0 in
   let rec go = fn (i: int) ->
@@ -72,7 +73,9 @@ let one_vec = fn (src) ->
   // fallback -- which is the second half of the bug this file pins.
   let _ = if vec_len enc == 0 && n > 0 then
             let _ = vec_push bad n in print ("EMPTY n=" ++ str_of_int n) else () in
-  let back = of_buf (inflate (to_buf enc) 0) in
+  let tmp = "/tmp/mgz_roundtrip.bin" in
+  let _ = inflate_to (to_buf enc) 0 tmp in
+  let back = of_buf (bytebuf_of_bytes (read_bytes tmp)) in
   if same src back then ()
   else let _ = vec_push bad n in
        print ("MISMATCH n=" ++ str_of_int n ++ " got " ++ str_of_int (vec_len back));

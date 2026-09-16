@@ -105,15 +105,31 @@ costs **eight bytes per byte** on a 64-bit backend, so a 4 MB gzip member was
 stdlib says as much about `read_file_bytes` — *"Costs eight bytes per byte;
 prefer `read_bytes`"* — and nothing here had read it.
 
-Measured by `test/gunzip_check.sh`, decompressing 2.2 MB:
+Then it stopped keeping the output at all. DEFLATE looks back at most 32768
+bytes, so that much is all a decompressor needs in hand; `inflate_to` writes
+the rest to the file as it goes, behind a 64 KiB window and a 64 KiB chunk.
+Constant, whatever the member's size — measured from inside, 7 MB of output
+moved the resident set from 1736 kB to 1744 kB.
 
-| | peak RSS | |
+The chunk is written **inside a `region` block**, and that block is the
+difference between constant and merely smaller: Mere gives memory back at a
+region boundary and nowhere else, and only for what the block itself
+allocated.
+
+`test/gunzip_check.sh` measures at two sizes, because one size gives a number
+and two give the shape. An implementation that keeps its output has the same
+cost per byte whatever it is given; one that writes as it goes has a cost per
+byte that falls.
+
+| | 1 MB out | 8 MB out |
 |---|---|---|
-| `Vec` of ints | 26.0 MB | 11× the output |
-| `ByteBuf` | 9.1 MB | 4× the output |
+| keeping the output | 536% | 303% |
+| writing as it goes | 233% | 77% |
 
-The gate asserts the ratio, so going back to one is caught rather than noticed
-later by whoever runs out of memory.
+The absolute figure is not asserted: macOS counts file-backed pages in the
+resident set, so writing a large file raises it whether or not the program is
+holding anything. The shape is portable, and the gate was checked against the
+implementation that keeps its output — it goes red there.
 
 **What it costs:** `inflate.mere` no longer compiles for RV32I, because a byte
 buffer has no lowering there. That backend is the reason `crc32_check.sh`

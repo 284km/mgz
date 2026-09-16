@@ -10,9 +10,10 @@ let main = fn () ->
     // and a gzip member is the one thing here whose size is not ours to choose.
     let data = bytebuf_of_bytes (read_bytes path) in
     if is_gzip data then
-      let out = gunzip data in
-      let _ = write_bytes (path ++ ".out") (bytes_of_bytebuf out) in
-      print (str_of_int (bytebuf_len data) ++ " -> " ++ str_of_int (bytebuf_len out)
-             ++ " bytes, crc " ++ (if gunzip_ok data out then "OK" else "MISMATCH"))
+      // Straight to the file. The two numbers the trailer carries were counted
+      // as the bytes went past, so nothing is kept in order to check them.
+      let (n, crc) = gunzip_to data (path ++ ".out") in
+      print (str_of_int (bytebuf_len data) ++ " -> " ++ str_of_int n
+             ++ " bytes, crc " ++ (if gzip_trailer_ok data n crc then "OK" else "MISMATCH"))
     else print "not a gzip file";
 main ()

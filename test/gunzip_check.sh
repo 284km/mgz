@@ -8,10 +8,9 @@
 # bytes with the right CRC-32 -- and the CRC is computed over the same wrong
 # bytes, so it would agree with itself.
 #
-# It also records the peak memory, because that is the reason this file was
-# written: the output is one int per byte, and a 4 MB layer costs about 71 MB
-# of vector. A bound rather than a print, so a change that gives it back has
-# something to be measured against.
+# It also measures the peak memory at two sizes, because that is the reason
+# this file was written. One size gives a number; two give the shape, and the
+# shape is what says whether the output is being kept.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MERE="${MERE:-mere}"
@@ -57,25 +56,42 @@ PY
   say $? "a stream from another compressor comes out the same"
 fi
 
-# Peak memory, against the size of what it decompressed.
-out_bytes=$(wc -c < "$TMP/in/big" | tr -d ' ')
-case "$(uname -s)" in
-  Darwin) /usr/bin/time -l "$TMP/mgunzip" "$TMP/big.gz" 2>"$TMP/time" >/dev/null
-          peak=$(awk '/maximum resident set size/{print $1}' "$TMP/time") ;;
-  *)      /usr/bin/time -v "$TMP/mgunzip" "$TMP/big.gz" 2>"$TMP/time" >/dev/null
-          peak=$(( $(awk '/Maximum resident set size/{print $6}' "$TMP/time") * 1024 )) ;;
-esac
-ratio=$(( peak / (out_bytes / 1024) / 1024 ))
-echo "  --    $out_bytes bytes out, peak RSS $peak bytes, ${ratio}x the output"
-# One byte per byte for the output, plus the input, plus the copy that freezes
-# the output for writing. Eight is comfortably above that and comfortably below
-# the eleven a vector of ints cost -- so going back to one is caught here.
-[ "$ratio" -lt 8 ]; say $? "peak memory is under 8x what it decompressed"
+# Peak memory, at two sizes.
+#
+# A ratio at one size cannot tell "constant" from "proportional": both look
+# like a number. Two sizes can. A decompressor that KEEPS its output has the
+# same ratio whatever it is given; one that writes as it goes has a ratio that
+# falls, because the constant part is being divided by a bigger number.
+#
+# The absolute figure is not asserted because it is not portable: macOS counts
+# file-backed pages in the resident set, so writing a large file raises it
+# whether or not the program is holding anything. The SHAPE is portable.
+peak_of() {   # peak_of <n copies>
+  i=0; : > "$TMP/m.in"
+  while [ "$i" -lt "$1" ]; do cat "$ROOT/inflate.mere" "$ROOT/deflate.mere" >> "$TMP/m.in"; i=$((i + 1)); done
+  gzip -c "$TMP/m.in" > "$TMP/m.gz"
+  case "$(uname -s)" in
+    Darwin) /usr/bin/time -l "$TMP/mgunzip" "$TMP/m.gz" 2>"$TMP/time" >/dev/null
+            awk '/maximum resident set size/{print $1}' "$TMP/time" ;;
+    *)      /usr/bin/time -v "$TMP/mgunzip" "$TMP/m.gz" 2>"$TMP/time" >/dev/null
+            echo $(( $(awk '/Maximum resident set size/{print $6}' "$TMP/time") * 1024 )) ;;
+  esac
+}
+p_small=$(peak_of 25);  s_small=$(wc -c < "$TMP/m.in" | tr -d ' ')
+p_big=$(peak_of 200);   s_big=$(wc -c < "$TMP/m.in" | tr -d ' ')
+r_small=$(( p_small * 100 / s_small ))
+r_big=$(( p_big * 100 / s_big ))
+echo "  --    $s_small bytes out: peak $p_small (${r_small}%)"
+echo "  --    $s_big bytes out: peak $p_big (${r_big}%)"
+# Eight times the data and the cost per byte has to have at least halved. It
+# does not move at all for an implementation that holds the output.
+[ "$r_big" -lt $(( r_small / 2 )) ]
+say $? "eight times the output costs less than half as much per byte"
 
 # Poison: a decompressor that drops a byte still has a self-consistent CRC only
 # if the CRC is computed over what it produced -- which it is. So the poison is
 # on the OUTPUT, and the comparison against gzip is what catches it.
-sed 's|let _ = bytebuf_push out sym in loop ()|let _ = (if bytebuf_len out == 1000 then () else (let _ = bytebuf_push out sym in ())) in loop ()|' \
+sed 's|let _ = snk_put f win chunk sst sym in loop ()|let _ = (if (vec_get sst snk_total : int) == 1000 then () else (let _ = snk_put f win chunk sst sym in ())) in loop ()|' \
   "$ROOT/inflate.mere" > "$TMP/poison_inflate.mere"
 cmp -s "$ROOT/inflate.mere" "$TMP/poison_inflate.mere" && { echo "  FAIL  the poison changed nothing"; fail=1; }
 cp "$ROOT/crc32.mere" "$TMP/crc32.mere"   # the copy imports it from beside itself
