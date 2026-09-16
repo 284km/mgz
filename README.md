@@ -158,3 +158,54 @@ comparison catches it, and the daemon's own checksum happens to as well.
 ```sh
 MERE=/path/to/mere sh test/gunzip_check.sh
 ```
+
+## The compressor that compressed nothing
+
+Every check here asked whether the output was **correct**: `gunzip` accepts it,
+the CRC agrees, the bytes come back. A compressor that emits stored blocks
+passes all of them, and that is what this one did — on real input, silently.
+
+Three defects, found by pointing it at a container image layer:
+
+**It took six minutes.** The match finder scanned every distance from 1 to
+32768 at every position, with no early exit: 8.9 MB took **369 seconds**
+against the system gzip's 0.1, at a ratio within 2%. The ratio was never the
+problem. A hash chain — three bytes hash to a bucket, `head` holds the most
+recent position in it, `prev` chains back — examines the positions that
+*actually start with the same three bytes*. **1.3 seconds**, 250× faster.
+
+**It gave up on a whole block for a few bits of one table.** Huffman codes
+built by merging are optimal and may be deeper than the format allows. This
+detected that and fell back to a **stored** block, throwing away all the
+compression rather than a little of it. 10,000 bytes that gzip takes to 1,366
+came out at 10,023 — *bigger than they went in*. Limiting the lengths the way
+zlib does (clamp, then pay for it by pushing leaves down a level, then hand the
+shortest codes to the most frequent symbols) removes the fallback and keeps the
+result close to optimal rather than merely legal.
+
+**The same trees were built twice** — once to decide, once to write — and when
+only one of the two limited its lengths, the decider answered 16 for a tree the
+writer would have capped at 15. Every block of an 8.9 MB layer fell back to
+stored while the writer was perfectly able to encode it. There is now one
+place.
+
+Along the way: **lazy matching** (giving up a match when the next position has
+a longer one) and **blocks**. Blocking is not only for ratio — it is what
+bounds memory, since the whole input used to be tokenised at once and then
+tokenised *again* by the writer.
+
+| | before | now | gzip |
+|---|---|---|---|
+| 8.9 MB layer | 369 s, 8,940,223 B | **1.3 s, 4,055,360 B** | 0.1 s, 4,030,285 B |
+| peak memory | 489 MB | **237 MB** | — |
+| 400 KB witness | 400,053 B (stored) | **142,719 B** | 139,386 B |
+| 10 KB slice | 10,023 B (stored) | **1,353 B** | 1,366 B |
+
+`test/ratio_check.sh` is the check that was missing: it compares **size**
+against gzip at four sizes and requires within 10%. The sizes matter — the
+block-giving-up bug only appeared above about 8 KB, and an input smaller than
+the 32 KiB window cannot show a match finder that never looks past it. Its
+last case is **generated from a fixed seed** rather than recorded: a tar-shaped
+file of long NUL runs, fixed-width headers and a small alphabet, which is what
+a layer looks like and what was actually being compressed when this showed up.
+Poisoned by making the dynamic writer always decline, it fails nine ways.

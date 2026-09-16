@@ -6,3 +6,4 @@ target/
 deflate
 inflate
 a.out
+.build/
