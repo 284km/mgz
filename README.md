@@ -31,23 +31,33 @@ git clone https://github.com/284km/mgz .mere_modules/mgz
 import "mgz/inflate.mere";
 import "mgz/deflate.mere";
 
-let squeezed = deflate_body data;      // raw DEFLATE (RFC 1951)
-let member   = deflate_gzip data;      // ...in a gzip member (RFC 1952)
-let back     = inflate member (gzip_body_start member);
-let sum      = crc32_vec data;
+let squeezed = deflate_body data;                    // raw DEFLATE (RFC 1951)
+let member   = deflate_gzip data;                    // ...in a gzip member (RFC 1952)
+let (n, crc) = gunzip_to buf "out.bin";              // a gzip member, straight to a file
+let (obj, end_at, ok) = zlib_inflate buf 0;          // a zlib stream (RFC 1950), in memory
 ```
+
+`buf` is a `ByteBuf` (`bytebuf_of_bytes (read_bytes path)`).
 
 | export | from | meaning |
 |---|---|---|
-| `inflate data start` | inflate.mere | raw DEFLATE, decoding from byte offset `start` |
+| `inflate_to data start path` | inflate.mere | raw DEFLATE from offset `start`, written to `path`; returns `(length, crc32)`. Memory stays flat whatever the size |
+| `inflate_buf data start` | inflate.mere | raw DEFLATE into a ByteBuf; returns `(out, end)`, `end` = the offset just past the stream |
+| `zlib_inflate data start` | inflate.mere | a zlib stream into a ByteBuf; returns `(out, end, ok)`, `end` past the Adler-32, `ok` = header readable and checksum good |
+| `adler32 buf len` | inflate.mere | Adler-32 of the first `len` bytes |
 | `is_gzip data` | inflate.mere | does this look like a gzip member |
 | `gzip_body_start data` | inflate.mere | offset of the DEFLATE stream past the header |
-| `gunzip data` | inflate.mere | the two above, composed |
-| `gunzip_ok data out` | inflate.mere | verify the CRC-32 / ISIZE trailer |
-| `crc32_vec bytes` | either | CRC-32 of a byte vector |
+| `gunzip_to data path` | inflate.mere | `inflate_to` from the gzip body start |
+| `gzip_trailer_ok data len crc` | inflate.mere | the CRC-32 / ISIZE trailer, against the two numbers `..._to` returned |
+| `crc32_vec bytes` | deflate.mere | CRC-32 of a byte vector |
 | `deflate_body data` | deflate.mere | raw DEFLATE, dynamic Huffman with a stored fallback |
 | `deflate_stored data` | deflate.mere | raw DEFLATE, stored blocks only (always valid) |
 | `deflate_gzip data` | deflate.mere | `deflate_body` in a gzip member |
+
+`inflate`, `gunzip` and `gunzip_ok` (in-memory gzip) were removed in `695c8d6`
+when the output stopped being kept; this table listed them until the zlib
+entry points were added. The in-memory path is back only for zlib, whose
+callers (git objects) want the output whole and small.
 
 ## What's implemented
 

@@ -1,0 +1,14 @@
+// zlib_driver <in> <start> <out> -- one zlib stream at byte <start> of <in>,
+// inflated into <out>. Prints "<end> <ok> <len>": the offset past the stream's
+// checksum, whether header and checksum were good, and the output length.
+import "../inflate.mere";
+
+let main = fn () ->
+  match args () with
+  | Cons (inp, Cons (start_s, Cons (outp, _))) ->
+    let data = bytebuf_of_bytes (read_bytes inp) in
+    let (out, end_at, ok) = zlib_inflate data (int_of_str start_s) in
+    let _ = write_bytes outp (bytes_of_bytebuf out) in
+    print (str_of_int end_at ++ " " ++ (if ok then "ok" else "bad") ++ " " ++ str_of_int (bytebuf_len out))
+  | _ -> print "usage: zlib_driver <in> <start> <out>";
+main ()

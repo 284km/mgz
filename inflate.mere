@@ -11,6 +11,13 @@
 //
 // Exports used by other packages:
 //   inflate_to  data start path -> (len, crc)   raw DEFLATE, straight to a file
+//   inflate_buf data start      -> (out, end)   raw DEFLATE, into a ByteBuf;
+//                                               `end` is the offset of the
+//                                               first byte after the stream
+//   zlib_inflate data start     -> (out, end, ok)  a zlib stream (RFC 1950):
+//                                               `end` is past the Adler-32,
+//                                               `ok` is header and checksum
+//   adler32     buf len         -> int
 //   gunzip_to   data path      -> (len, crc)   the same, gzip header skipped
 //   gzip_trailer_ok data len crc -> bool   the trailer, against what came out
 //   is_gzip     data           -> bool
@@ -130,20 +137,31 @@ let fixed_dist_lengths = fn () ->
 let win_size = 65536;         // twice the furthest a distance can reach
 let chunk_size = 65536;
 
-// [total bytes out, crc accumulator, file offset, bytes in the chunk]
-let snk_total = 0; let snk_crc = 1; let snk_off = 2; let snk_fill = 3;
-let snk_new = fn (u: unit) ->
+// [total bytes out, crc accumulator, file offset, bytes in the chunk, mode]
+//
+// Two modes over ONE decoder. Mode 0 is the file sink above. Mode 1 keeps the
+// output: `chunk` is then the output itself, pushed to and never flushed, and
+// the CRC-32 is not computed -- the callers of mode 1 are zlib streams, whose
+// checksum is Adler-32 over the finished output. The window stays in both
+// modes, so a back-reference is read the same way whatever the sink: the
+// decoder has one rule for "dist bytes back", not one per destination.
+let snk_total = 0; let snk_crc = 1; let snk_off = 2; let snk_fill = 3; let snk_mode = 4;
+let snk_make = fn (mode: int) ->
   let v = vec_new () in
   let _ = vec_push v 0 in
   let _ = vec_push v mask32 in
   let _ = vec_push v 0 in
   let _ = vec_push v 0 in
+  let _ = vec_push v mode in
   v;
+let snk_new = fn (u: unit) -> snk_make 0;
 
 // A full chunk, straight out of the buffer it was filled in.
 let snk_full = fn (f) -> fn (chunk) -> fn (st) ->
   let off = (vec_get st snk_off : int) in
-  let _ = region R { file_pwrite_bytes f off (bytes_of_bytebuf chunk) } in
+  let _ = match f with
+          | Some fh -> region R { file_pwrite_bytes fh off (bytes_of_bytebuf chunk) }
+          | None -> 0 in
   let _ = vec_set st snk_off (off + chunk_size) in
   let _ = vec_set st snk_fill 0 in
   0;
@@ -153,7 +171,7 @@ let snk_full = fn (f) -> fn (chunk) -> fn (st) ->
 // back with everything else the block made.
 let snk_tail = fn (f) -> fn (chunk) -> fn (st) ->
   let n = (vec_get st snk_fill : int) in
-  if n == 0 then 0
+  if n == 0 || (vec_get st snk_mode : int) == 1 then 0
   else
     let off = (vec_get st snk_off : int) in
     let _ = region R {
@@ -161,7 +179,9 @@ let snk_tail = fn (f) -> fn (chunk) -> fn (st) ->
               let rec go = fn (i: int) ->
                 if i == n then () else let _ = bytebuf_push b (bytebuf_get chunk i) in go (i + 1) in
               let _ = go 0 in
-              file_pwrite_bytes f off (bytes_of_bytebuf b)
+              match f with
+              | Some fh -> file_pwrite_bytes fh off (bytes_of_bytebuf b)
+              | None -> 0
             } in
     let _ = vec_set st snk_off (off + n) in
     let _ = vec_set st snk_fill 0 in
@@ -171,6 +191,10 @@ let snk_tail = fn (f) -> fn (chunk) -> fn (st) ->
 let snk_put = fn (f) -> fn (win) -> fn (chunk) -> fn (st) -> fn (b: int) ->
   let t = (vec_get st snk_total : int) in
   let _ = bytebuf_set win (t % win_size) b in
+  if (vec_get st snk_mode : int) == 1 then
+    let _ = bytebuf_push chunk b in
+    vec_set st snk_total (t + 1)
+  else
   let fill = (vec_get st snk_fill : int) in
   let _ = bytebuf_set chunk fill b in
   let _ = vec_set st snk_crc (crc_byte (vec_get st snk_crc : int) b) in
@@ -259,18 +283,11 @@ let read_dynamic = fn s -> fn data ->
   let _ = split 0 in
   (llen, dlen);
 
-// Inflate into a file. Returns (bytes written, CRC-32 of them) -- the two
-// numbers the gzip trailer carries, computed as the bytes go past rather than
-// over a copy that had to be kept for the purpose.
-let inflate_to = fn data -> fn (start: int) -> fn (path: str) ->
-  // file_openrw does not truncate, so a longer file already there would keep
-  // its tail past whatever is written now. Emptying it first is the whole fix
-  // and it is one line.
-  let _ = write_bytes path (bytes_of_bytebuf (bytebuf_new 0)) in
-  let f = file_openrw path in
-  let win = bytebuf_new win_size in
-  let chunk = bytebuf_new chunk_size in
-  let sst = snk_new () in
+// Every block of the stream at `start`, into the sink. Returns the offset of
+// the first byte after the stream: the bit reader has consumed whole bytes,
+// and the bits left in the last one are padding (RFC 1951 ends a stream on
+// no particular bit).
+let inflate_run = fn data -> fn (start: int) -> fn f -> fn win -> fn chunk -> fn sst ->
   let s = br_new start in
   let rec block = fn () ->
     let final = br_bit s data in
@@ -296,9 +313,67 @@ let inflate_to = fn data -> fn (start: int) -> fn (path: str) ->
         inflate_codes s data f win chunk sst lc ls dc ds in
     if final == 1 then () else block () in
   let _ = block () in
-  let _ = snk_tail f chunk sst in
+  (vec_get s 0 : int);
+
+// Inflate into a file. Returns (bytes written, CRC-32 of them) -- the two
+// numbers the gzip trailer carries, computed as the bytes go past rather than
+// over a copy that had to be kept for the purpose.
+let inflate_to = fn data -> fn (start: int) -> fn (path: str) ->
+  // file_openrw does not truncate, so a longer file already there would keep
+  // its tail past whatever is written now. Emptying it first is the whole fix
+  // and it is one line.
+  let _ = write_bytes path (bytes_of_bytebuf (bytebuf_new 0)) in
+  let f = file_openrw path in
+  let win = bytebuf_new win_size in
+  let chunk = bytebuf_new chunk_size in
+  let sst = snk_new () in
+  let _ = inflate_run data start (Some f) win chunk sst in
+  let _ = snk_tail (Some f) chunk sst in
   let _ = file_close f in
   ((vec_get sst snk_total : int), bit_xor (vec_get sst snk_crc : int) mask32);
+
+// Inflate into memory: (the output, the offset just past the stream). For
+// callers whose output is small and wanted whole -- a git object -- and whose
+// input holds more than one stream, so where this one ended is the answer to
+// where the next thing begins.
+let inflate_buf = fn data -> fn (start: int) ->
+  let out = bytebuf_new 0 in
+  let win = bytebuf_new win_size in
+  let sst = snk_make 1 in
+  // no file: mode 1 never flushes, and `None` says so in the type
+  let end_at = inflate_run data start None win out sst in
+  (out, end_at);
+
+// ---- zlib container (RFC 1950) ---------------------------------------------
+// the trailer is big-endian (gzip's, below, is little-endian)
+let zlib_u32_be = fn data -> fn (o: int) ->
+  bit_shl (bytebuf_get data o) 24 + bit_shl (bytebuf_get data (o + 1)) 16
+  + bit_shl (bytebuf_get data (o + 2)) 8 + bytebuf_get data (o + 3);
+
+// Adler-32 of the first `len` bytes: two sums modulo 65521, the larger prime
+// below 2^16. Deferring the modulo would be faster; one per byte keeps every
+// value below 2^17 on every int width, and this is not the slow part.
+let adler32 = fn buf -> fn (len: int) ->
+  let rec go = fn (i: int) -> fn (a: int) -> fn (b: int) ->
+    if i == len then bit_or (bit_shl b 16) a
+    else
+      let a2 = (a + bytebuf_get buf i) % 65521 in
+      go (i + 1) a2 ((b + a2) % 65521) in
+  go 0 1 0;
+
+// A zlib stream at `start`: CMF, FLG, DEFLATE, then Adler-32 big-endian.
+// `ok` says the header is one this reads (method 8, no preset dictionary,
+// FCHECK consistent) AND the checksum matches the output; `end` is past the
+// checksum. A header this does not read is not inflated at all.
+let zlib_inflate = fn data -> fn (start: int) ->
+  let cmf = bytebuf_get data start in
+  let flg = bytebuf_get data (start + 1) in
+  let head_ok = bit_and cmf 15 == 8 && (cmf * 256 + flg) % 31 == 0 && bit_and flg 32 == 0 in
+  if head_ok == false then (bytebuf_new 0, start, false)
+  else
+    let (out, dend) = inflate_buf data (start + 2) in
+    let stored = zlib_u32_be data dend in
+    (out, dend + 4, stored == adler32 out (bytebuf_len out));
 
 // ---- gzip container -------------------------------------------------------
 // Offset of the DEFLATE stream inside a gzip member: past the 10-byte header
