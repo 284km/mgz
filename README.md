@@ -126,6 +126,14 @@ difference between constant and merely smaller: Mere gives memory back at a
 region boundary and nowhere else, and only for what the block itself
 allocated.
 
+The same holds for `zlib_inflate`'s window. It is not part of the result, so
+nothing tells the compiler where it should live, and a buffer whose region
+nobody decides goes to the default one, which is never given back. Making it
+inside a block of its own is three lines; for a caller that inflates one small
+stream per object it was most of the memory — mgit, reading every object of a
+17,500-object repository, allocated 11.5 GB in the default region before and
+3.2 GB after, with the same output.
+
 `test/gunzip_check.sh` measures at two sizes, because one size gives a number
 and two give the shape. An implementation that keeps its output has the same
 cost per byte whatever it is given; one that writes as it goes has a cost per

@@ -336,12 +336,18 @@ let inflate_to = fn data -> fn (start: int) -> fn (path: str) ->
 // callers whose output is small and wanted whole -- a git object -- and whose
 // input holds more than one stream, so where this one ended is the answer to
 // where the next thing begins.
+//
+// The window is made inside a `region` block. It does not appear in this
+// function's type -- only `out` does -- so outside a block it went to the
+// default region, which is never given back: mgit inflates one stream per git
+// object, and 127,314 windows of 64 KiB were 8.3 GB of its 11.5 GB.
 let inflate_buf = fn data -> fn (start: int) ->
   let out = bytebuf_new 0 in
-  let win = bytebuf_new win_size in
   let sst = snk_make 1 in
   // no file: mode 1 never flushes, and `None` says so in the type
-  let end_at = inflate_run data start None win out sst in
+  let end_at = region W {
+    let win = bytebuf_new win_size in
+    inflate_run data start None win out sst } in
   (out, end_at);
 
 // ---- zlib container (RFC 1950) ---------------------------------------------
