@@ -201,6 +201,19 @@ zlib does (clamp, then pay for it by pushing leaves down a level, then hand the
 shortest codes to the most frequent symbols) removes the fallback and keeps the
 result close to optimal rather than merely legal.
 
+The correction budget is the excess Kraft sum, measured in units of the
+longest permitted code. Counting only overlong leaves undercounts the work:
+the earlier limiter could produce a 7-bit code-length tree using 129 of its
+128 available slots. Every redistribution now frees exactly one slot, and
+all three alphabets are validated before the writer emits any block bits.
+An invalid tree falls back to a stored block.
+
+`MERE=/path/to/mere python3 test/huffman_check.py` checks symbol coverage,
+length limits and exact code space for literal/length, distance and code-length
+alphabets, then decodes mixed zero-run/random streams with native gzip. The
+frequency checks fail against the old limiter, including a Fibonacci-weighted
+19-symbol alphabet that used 133 slots instead of 128.
+
 **The same trees were built twice** — once to decide, once to write — and when
 only one of the two limited its lengths, the decider answered 16 for a tree the
 writer would have capped at 15. Every block of an 8.9 MB layer fell back to

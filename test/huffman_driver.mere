@@ -1,0 +1,24 @@
+import "../deflate.mere";
+
+// Frequencies are unsigned little-endian 32-bit words. Expose the lengths
+// so an independent checker can verify the prefix-code space directly.
+let main = fn () ->
+  match args () with
+  | Cons (path, Cons (bits, _)) ->
+    let raw = read_file_bytes path in
+    let freq = vec_new () in
+    let n = vec_len raw / 4 in
+    let rec load = fn (i: int) ->
+      if i == n then () else
+        let at = i * 4 in
+        let f = (vec_get raw at : int) + 256 * (vec_get raw (at + 1) : int)
+                  + 65536 * (vec_get raw (at + 2) : int) + 16777216 * (vec_get raw (at + 3) : int) in
+        let _ = vec_push freq f in load (i + 1) in
+    let _ = load 0 in
+    let maxbits = int_of_str bits in
+    let lengths = limit_lengths (build_lengths freq n maxbits) freq n maxbits in
+    let rec show = fn (i: int) ->
+      if i == n then () else let _ = print (str_of_int (vec_get lengths i : int)) in show (i + 1) in
+    show 0
+  | _ -> fail "usage: huffman_driver frequencies maxbits";
+main ()
