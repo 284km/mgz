@@ -263,27 +263,27 @@ let limit_lengths = fn (len) -> fn (freq) -> fn (nsym: int) -> fn (maxbits: int)
   let cnt = vec_new () in
   let rec zc = fn (i: int) -> if i > 64 then () else let _ = vec_push cnt 0 in zc (i + 1) in
   let _ = zc 0 in
-  // Clamp first, the way zlib counts it: every overlong code becomes maxbits
-  // and is remembered as an overflow to be paid for below.
-  let ovf = vec_new () in
-  let _ = vec_push ovf 0 in
+  // Measure excess code space in units of one maxbits-length code.
+  // Counting only overlong leaves misses the overflowing internal nodes:
+  // their clamped Kraft sum can exceed one after the old correction ends.
   let rec clamp = fn (i: int) ->
     if i >= nsym then ()
     else
       let _ = if (vec_get freq i : int) > 0 then
                 (let b = (vec_get len i : int) in
-                 let b2 = if b > maxbits then
-                            (let _ = vec_set ovf 0 ((vec_get ovf 0 : int) + 1) in maxbits)
-                          else b in
+                 let b2 = if b > maxbits then maxbits else b in
                  let _ = vec_set len i b2 in
                  let _ = vec_set cnt b2 ((vec_get cnt b2 : int) + 1) in ())
               else () in
       clamp (i + 1) in
   let _ = clamp 0 in
-  if (vec_get ovf 0 : int) == 0 then len
+  let rec space = fn (b: int) ->
+    if b > maxbits then 0 else (vec_get cnt b : int) * (bit_shl 1 (maxbits - b)) + space (b + 1) in
+  let excess = space 1 - (bit_shl 1 maxbits) in
+  if excess <= 0 then len
   else
-    // One leaf moves down a level and takes an overflow item as its brother;
-    // two overflow items are accounted for each time round.
+    // Split one shorter leaf into two, then remove one longest leaf.
+    // This preserves the number of leaves and frees exactly one unit.
     let rec fix = fn (ov: int) ->
       if ov <= 0 then ()
       else
@@ -293,8 +293,8 @@ let limit_lengths = fn (len) -> fn (freq) -> fn (nsym: int) -> fn (maxbits: int)
         let _ = vec_set cnt b ((vec_get cnt b : int) - 1) in
         let _ = vec_set cnt (b + 1) ((vec_get cnt (b + 1) : int) + 2) in
         let _ = vec_set cnt maxbits ((vec_get cnt maxbits : int) - 1) in
-        fix (ov - 2) in
-    let _ = fix (vec_get ovf 0 : int) in
+        fix (ov - 1) in
+    let _ = fix excess in
     // The symbols that have a code, most frequent first. Insertion sort: the
     // biggest alphabet here is 286 and the comparison has to be stable in the
     // symbol as well, or two runs of the same data produce two encodings.
@@ -340,6 +340,18 @@ let limit_lengths = fn (len) -> fn (freq) -> fn (nsym: int) -> fn (maxbits: int)
         give (b + 1) in
     let _ = give 1 in
     len;
+
+// Validate before emitting any bits. Literal/distance trees permit the
+// DEFLATE single-symbol, one-bit special case; the code-length tree does not.
+let valid_lengths = fn lengths -> fn (n: int) -> fn (maxbits: int) -> fn (single: bool) ->
+  let rec scan = fn (i: int) -> fn (used: int) -> fn (symbols: int) ->
+    if i == n then used == (bit_shl 1 maxbits) || (single && symbols == 1 && used == (bit_shl 1 (maxbits - 1)))
+    else
+      let b = (vec_get lengths i : int) in
+      if b < 0 || b > maxbits then false
+      else if b == 0 then scan (i + 1) used symbols
+      else scan (i + 1) (used + (bit_shl 1 (maxbits - b))) (symbols + 1) in
+  scan 0 0 0;
 
 // canonical codes (values) from a lengths vec, per RFC 1951 §3.2.2.
 let canon_codes = fn lengths -> fn (n: int) -> fn (maxbits: int) ->
@@ -476,6 +488,9 @@ let deflate_dynamic = fn data -> fn toks -> fn s -> fn out -> fn (bfinal: int) -
   let dlen = limit_lengths (build_lengths dfreq 30 15) dfreq 30 15 in
   // dist: DEFLATE needs at least one dist code; if none, force symbol 0 len 1
   let _ = if vmax dlen 30 == 0 then vec_set dlen 0 1 else () in
+  if (if valid_lengths llen 286 15 true then false else true)
+     || (if valid_lengths dlen 30 15 true then false else true) then 0
+  else
   let lcode = canon_codes llen 286 15 in
   let dcode = canon_codes dlen 30 15 in
   // HLIT / HDIST
@@ -555,7 +570,7 @@ let deflate_dynamic = fn data -> fn toks -> fn s -> fn out -> fn (bfinal: int) -
   // `deflate_stored` here because that function is defined below this one and
   // there is no forward reference; an empty output is unambiguous, since a real
   // deflate block is never zero bytes.
-  if vmax cllen 19 > 7 then 0
+  if valid_lengths cllen 19 7 false == false then 0
   else
   let clcode = canon_codes cllen 19 7 in
   // HCLEN: number of cl code lengths present, in cl_order, min 4
